@@ -18,7 +18,7 @@ async def checkout_webhook(
     request: Request
 ):
     try:
-        logger.info(f"[Webhook] Received checkout webhook: {payload}")
+        logger.info(f"[Webhook] Received checkout webhook")
         
         # Extract data from Shopify's format
         email = payload.get("email")
@@ -29,7 +29,27 @@ async def checkout_webhook(
         last_name = customer.get("last_name", "")
         customer_name = f"{first_name} {last_name}".strip() or None
         
-        customer_phone = customer.get("phone")
+        # Phone number can be in multiple places in Shopify
+        customer_phone = None
+        
+        # Try customer phone first
+        if customer.get("phone"):
+            customer_phone = customer.get("phone")
+        # Try customer default address
+        elif customer.get("default_address", {}).get("phone"):
+            customer_phone = customer.get("default_address", {}).get("phone")
+        # Try billing address
+        elif payload.get("billing_address", {}).get("phone"):
+            customer_phone = payload.get("billing_address", {}).get("phone")
+        # Try shipping address
+        elif payload.get("shipping_address", {}).get("phone"):
+            customer_phone = payload.get("shipping_address", {}).get("phone")
+        # Try top-level phone
+        elif payload.get("phone"):
+            customer_phone = payload.get("phone")
+        # Try SMS marketing phone
+        elif payload.get("sms_marketing_phone"):
+            customer_phone = payload.get("sms_marketing_phone")
         
         # Extract line items
         line_items = payload.get("line_items", [])
@@ -52,12 +72,17 @@ async def checkout_webhook(
         
         logger.info(f"[Webhook] Parsed data - Email: {email}, Phone: {customer_phone}, Name: {customer_name}")
         
-        background_task.add_task(handle_checkout_flow, checkout_data)
-        return {"status": "received", "email": email}
+        # Only process if we have email (phone is optional but preferred)
+        if email:
+            background_task.add_task(handle_checkout_flow, checkout_data)
+            return {"status": "received", "email": email, "phone": customer_phone}
+        else:
+            logger.warning(f"[Webhook] No email found in checkout payload")
+            return {"status": "skipped", "reason": "no_email"}
         
     except Exception as e:
         logger.error(f"[Webhook] Error processing checkout: {str(e)}")
-        logger.error(f"[Webhook] Raw payload: {payload}")
+        logger.error(f"[Webhook] Raw payload keys: {list(payload.keys())}")
         raise HTTPException(status_code=400, detail=f"Error processing webhook: {str(e)}")
 
 @router.post("/orders/create")
