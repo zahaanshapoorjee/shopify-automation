@@ -1,9 +1,17 @@
+import logging
 from contextlib import asynccontextmanager
-from typing import Union
 from fastapi import FastAPI
 from app.api.routes import router
 from app.state.store import init_database, postgres_store
-import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),  # This outputs to console/terminal
+    ]
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,4 +34,3 @@ def read_root():
         "message": "Hello World!",
         "database": "Connected to Neon PostgreSQL"
     }
-
