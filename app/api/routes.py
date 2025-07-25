@@ -2,6 +2,7 @@ from fastapi import APIRouter, BackgroundTasks, Request, HTTPException
 from app.models.checkout import CheckoutPayload
 from app.services.handlers import handle_checkout_flow
 from app.state.store import update_checkout_status
+from app.database.postgres_store import postgres_store  # Add this import
 import logging
 
 router = APIRouter()
@@ -121,3 +122,99 @@ async def debug_webhook(payload: dict, request: Request):
     print(f"{'='*50}\n")
     
     return {"status": "debug_received", "payload_keys": list(payload.keys())}
+
+@router.delete("/admin/reset-database")
+async def reset_database():
+    """
+    DANGER: Reset database - FOR TESTING ONLY
+    Deletes all checkout flows from the database
+    """
+    try:
+        async with postgres_store.pool.acquire() as conn:
+            # Delete all checkout flows
+            result = await conn.execute("DELETE FROM checkout_flows")
+            
+            # Extract count from result string like "DELETE 5"
+            deleted_count = int(result.split()[-1]) if result and result.split() else 0
+            
+            logger.info(f"[Admin] Database reset - Deleted {deleted_count} checkout flows")
+            
+            return {
+                "status": "success",
+                "message": f"Database reset successfully",
+                "deleted_rows": deleted_count,
+                "warning": "All checkout flows have been deleted"
+            }
+            
+    except Exception as e:
+        logger.error(f"[Admin] Database reset failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database reset failed: {str(e)}")
+
+@router.get("/admin/database-state")
+async def get_database_state():
+    """
+    Get complete database state - all checkout flows and statistics
+    """
+    try:
+        async with postgres_store.pool.acquire() as conn:
+            # Get all flows
+            flows = await conn.fetch("""
+                SELECT 
+                    email, 
+                    status, 
+                    step_status, 
+                    customer_name, 
+                    customer_phone, 
+                    client_id,
+                    created_at, 
+                    updated_at
+                FROM checkout_flows 
+                ORDER BY created_at DESC
+            """)
+            
+            # Get statistics
+            stats = await conn.fetchrow("""
+                SELECT 
+                    COUNT(*) as total_flows,
+                    COUNT(*) FILTER (WHERE status = 'pending') as pending_flows,
+                    COUNT(*) FILTER (WHERE status = 'completed') as completed_flows,
+                    COUNT(*) FILTER (WHERE status = 'blocked') as blocked_flows,
+                    COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour') as flows_last_hour,
+                    COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours') as flows_last_24h,
+                    MIN(created_at) as oldest_flow,
+                    MAX(created_at) as newest_flow
+                FROM checkout_flows
+            """)
+            
+            # Convert flows to list of dicts
+            flows_data = []
+            for flow in flows:
+                flows_data.append({
+                    "email": flow["email"],
+                    "status": flow["status"],
+                    "step_status": flow["step_status"],
+                    "customer_name": flow["customer_name"],
+                    "customer_phone": flow["customer_phone"],
+                    "client_id": flow["client_id"],
+                    "created_at": flow["created_at"].isoformat() if flow["created_at"] else None,
+                    "updated_at": flow["updated_at"].isoformat() if flow["updated_at"] else None
+                })
+            
+            return {
+                "statistics": {
+                    "total_flows": stats["total_flows"],
+                    "pending_flows": stats["pending_flows"],
+                    "completed_flows": stats["completed_flows"],
+                    "blocked_flows": stats["blocked_flows"],
+                    "flows_last_hour": stats["flows_last_hour"],
+                    "flows_last_24h": stats["flows_last_24h"],
+                    "oldest_flow": stats["oldest_flow"].isoformat() if stats["oldest_flow"] else None,
+                    "newest_flow": stats["newest_flow"].isoformat() if stats["newest_flow"] else None
+                },
+                "flows": flows_data,
+                "total_records": len(flows_data)
+            }
+            
+    except Exception as e:
+        logger.error(f"[Admin] Database state query failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database state query failed: {str(e)}")
